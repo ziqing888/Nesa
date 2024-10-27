@@ -1,0 +1,279 @@
+#!/bin/bash
+
+# 自定义样式变量
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+UNDERLINE='\033[4m'
+RESET='\033[0m'
+
+# 图标定义
+INFO_ICON="ℹ️"
+SUCCESS_ICON="✅"
+WARNING_ICON="⚠️"
+ERROR_ICON="❌"
+
+# 日志文件路径
+LOG_FILE="$HOME/installation.log"
+
+# 信息显示函数
+log_info() {
+    echo -e "${BLUE}${INFO_ICON} [INFO]${RESET} $1"
+    echo "[INFO] $1" >> "$LOG_FILE"
+}
+
+log_success() {
+    echo -e "${GREEN}${SUCCESS_ICON} [SUCCESS]${RESET} $1"
+    echo "[SUCCESS] $1" >> "$LOG_FILE"
+}
+
+log_warning() {
+    echo -e "${YELLOW}${WARNING_ICON} [WARNING]${RESET} $1"
+    echo "[WARNING] $1" >> "$LOG_FILE"
+}
+
+log_error() {
+    echo -e "${RED}${ERROR_ICON} [ERROR]${RESET} $1"
+    echo "[ERROR] $1" >> "$LOG_FILE"
+}
+
+# 脚本保存路径
+SCRIPT_PATH="$HOME/Nesa.sh"
+
+# 主菜单函数
+function main_menu() {
+    while true; do
+        clear
+        # 下载并显示 logo
+        curl -s https://raw.githubusercontent.com/ziqing888/logo.sh/refs/heads/main/logo.sh | bash
+        sleep 3
+        echo -e "${CYAN}${BOLD}============================================${RESET}"
+        echo -e "${CYAN}${BOLD}         🚀 欢迎使用节点管理脚本 🚀       ${RESET}"
+        echo -e "${CYAN}${BOLD}============================================${RESET}"
+        echo "请选择要执行的操作:"
+        echo "1) 安装节点"
+        echo "2) 获取节点状态 URL"
+        echo "3) 获取节点信息（私钥）"
+        echo "4) 退出"
+        read -p "请输入选项 [1-4]: " choice
+
+        case $choice in
+            1) install_node ;;
+            2) get_node_status_url ;;
+            3) get_node_info ;;
+            4)
+                log_info "退出脚本。"
+                exit 0
+                ;;
+            *)
+                log_warning "无效的选项，请重新选择。"
+                ;;
+        esac
+    done
+}
+
+# 获取节点状态 URL 函数
+function get_node_status_url() {
+    if [ -f "$HOME/.nesa/identity/node_id.id" ]; then
+        PUB_KEY=$(cat $HOME/.nesa/identity/node_id.id)
+        log_info "节点状态 URL: https://node.nesa.ai/nodes/$PUB_KEY"
+    else
+        log_error "节点身份文件未找到，请确认 $HOME/.nesa/identity/node_id.id 是否存在。"
+    fi
+    read -p "按任意键返回主菜单..."
+}
+
+# 获取节点信息函数
+function get_node_info() {
+    ENV_FILE="$HOME/.nesa/env/agent.env"
+    if [ -f "$ENV_FILE" ]; then
+        log_info "获取节点信息:"
+        echo "========================================"
+        grep '^LETSENCRYPT_EMAIL=' $ENV_FILE | cut -d '=' -f2
+        grep '^NODE_HOSTNAME=' $ENV_FILE | cut -d '=' -f2
+        grep '^NODE_PRIV_KEY=' $ENV_FILE | cut -d '=' -f2
+    else
+        log_error "环境文件未找到，请确认 $ENV_FILE 是否存在。"
+    fi
+    read -p "按任意键返回主菜单..."
+}
+
+# 安装节点函数
+function install_node() {
+    log_info "更新系统并安装 curl..."
+    sudo apt-get update
+    sudo apt-get install -y curl
+
+    # 检测 Docker 是否安装
+    if ! command -v docker &> /dev/null; then
+        log_info "Docker 未安装，正在安装 Docker..."
+        
+        # 添加 Docker 的 GPG 密钥
+        log_info "添加 Docker 的 GPG 密钥..."
+        sudo apt-get update
+        sudo apt-get install -y ca-certificates curl
+        sudo install -m 0755 -d /etc/apt/keyrings
+        sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+        sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+        # 将 Docker 仓库添加到 APT 源中
+        log_info "添加 Docker 仓库..."
+        echo \
+          "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+          $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+          sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        sudo apt-get update
+        sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+        # 启动 Docker 服务
+        log_info "启动 Docker 服务..."
+        sudo systemctl start docker
+        sudo systemctl enable docker
+    else
+        log_info "Docker 已安装。"
+    fi
+
+    # 添加用户到 Docker 组
+    if ! getent group docker > /dev/null; then
+        log_info "创建 Docker 组..."
+        sudo groupadd docker
+    fi
+
+    log_info "将用户 $USER 添加到 Docker 组..."
+    sudo usermod -aG docker $USER
+    
+    # 检测 NVIDIA GPU 驱动是否安装
+    if ! command -v nvidia-smi &> /dev/null; then
+        log_info "NVIDIA 驱动未安装，正在安装最新版本的 NVIDIA 驱动。"
+        sudo add-apt-repository ppa:graphics-drivers/ppa
+        sudo apt-get update
+        sudo apt-get install -y nvidia-driver-$(ubuntu-drivers devices | grep recommended | awk '{print $3}')
+    else
+        log_info "NVIDIA 驱动已安装。"
+    fi
+
+    # 安装 gum（如果不存在）
+    if ! command -v gum &> /dev/null; then
+        log_info "gum 未安装，正在安装 gum。"
+        curl -fsSL https://github.com/charmbracelet/gum/releases/download/v0.18.0/gum_0.18.0_linux_amd64.tar.gz | sudo tar xz -C /usr/local/bin
+    else
+        log_info "gum 已安装。"
+    fi
+
+    # 安装 jq（如果不存在）
+    if ! command -v jq &> /dev/null; then
+        log_info "jq 未安装，正在安装 jq。"
+        sudo apt-get install -y jq
+    else
+        log_info "jq 已安装。"
+    fi
+
+    # 检测 Docker Compose 是否安装
+    if ! command -v docker-compose &> /dev/null; then
+        log_info "Docker Compose 未安装，正在安装 Docker Compose。"
+        VER=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep tag_name | cut -d '"' -f 4)
+        curl -L "https://github.com/docker/compose/releases/download/$VER/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+        chmod +x /usr/local/bin/docker-compose
+    else
+        log_info "Docker Compose 已安装。"
+    fi
+
+    # 验证安装
+    docker-compose --version
+
+    # 配置节点
+    log_info "配置节点..."
+    read -p "请为您的节点选择一个唯一的名称： " NODE_NAME
+    PS3="请选择节点类型: "
+    NODE_TYPE_OPTIONS=("Validator" "Miner" "退出")
+    select NODE_TYPE in "${NODE_TYPE_OPTIONS[@]}"; do
+        case $NODE_TYPE in
+            "Validator")
+                read -p "Validator's Private Key: " PRIVATE_KEY
+                log_info "节点名称: $NODE_NAME"
+                log_info "节点类型: Validator"
+                log_info "Validator's Private Key: $PRIVATE_KEY"
+                break
+                ;;
+            "Miner")
+                PS3="请选择矿工类型: "
+                MINER_TYPE_OPTIONS=("Distributed Miner" "Non-Distributed Miner" "退出")
+                select MINER_TYPE in "${MINER_TYPE_OPTIONS[@]}"; do
+                    case $MINER_TYPE in
+                        "Distributed Miner")
+                            PS3="请选择 swarm 操作: "
+                            SWARM_ACTION_OPTIONS=("Join existing swarm" "Start a new swarm" "退出")
+                            select SWARM_ACTION in "${SWARM_ACTION_OPTIONS[@]}"; do
+                                case $SWARM_ACTION in
+                                    "Start a new swarm")
+                                        read -p "Which model would you like to run? (meta-llama/Llama-2-13b-Chat-Hf): " MODEL
+                                        log_info "节点名称: $NODE_NAME"
+                                        log_info "节点类型: Miner"
+                                        log_info "矿工类型: Distributed Miner"
+                                        log_info "Swarm 操作: Start a new swarm"
+                                        log_info "模型: $MODEL"
+                                        break
+                                        ;;
+                                    "Join existing swarm")
+                                        log_info "加入现有 swarm 的逻辑尚未实现。"
+                                        log_info "节点名称: $NODE_NAME"
+                                        log_info "节点类型: Miner"
+                                        log_info "矿工类型: Distributed Miner"
+                                        log_info "Swarm 操作: Join existing swarm"
+                                        break
+                                        ;;
+                                    "退出")
+                                        exit 1
+                                        ;;
+                                    *)
+                                        log_warning "无效的选项 $REPLY"
+                                        ;;
+                                esac
+                            done
+                            break
+                            ;;
+                        "Non-Distributed Miner")
+                            read -p "Which model would you like to run? (meta-llama/Llama-2-13b-Chat-Hf): " MODEL
+                            log_info "节点名称: $NODE_NAME"
+                            log_info "节点类型: Miner"
+                            log_info "矿工类型: Non-Distributed Miner"
+                            log_info "模型: $MODEL"
+                            break
+                            ;;
+                        "退出")
+                            exit 1
+                            ;;
+                        *)
+                            log_warning "无效的选项 $REPLY"
+                            ;;
+                    esac
+                done
+                break
+                ;;
+            "退出")
+                exit 1
+                ;;
+            *)
+                log_warning "无效的选项 $REPLY"
+                ;;
+        esac
+    done
+
+    log_info "运行远程初始化脚本..."
+    bash <(curl -s https://raw.githubusercontent.com/nesaorg/bootstrap/master/bootstrap.sh)
+
+    log_info "尝试启动 Docker Compose 容器..."
+    cd /root/.nesa/docker
+    if sudo docker-compose up -d; then
+        log_success "Docker Compose 容器启动成功。"
+    else
+        log_error "Docker Compose 容器启动失败，请检查配置和日志。"
+    fi
+    read -p "按任意键返回主菜单..."
+}
+
+# 运行主菜单
+main_menu
